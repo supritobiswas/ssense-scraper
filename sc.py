@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from csv import DictWriter
-from tenacity import retry
+from tenacity import *
 from pathlib import Path
 import browser_cookie3
 import pandas as pd
@@ -9,11 +9,10 @@ import json
 import re
 
 
-final_data = []
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36'}
 
 def refreshCookies():
-	cj = browser_cookie3.chrome()
+	cj = browser_cookie3.firefox()
 	domain_url = 'ssense.com'
 	ss_cookies = {}
 	for c in cj:
@@ -22,7 +21,7 @@ def refreshCookies():
 	return ss_cookies
 
 # Get Data from each URL
-@retry(wait=wait_fixed(2))
+@retry(wait=wait_fixed(1))
 def getData(prod_url):
 	item_main_cat = prod_url['category']
 	item_url = prod_url['url']
@@ -80,7 +79,7 @@ def getData(prod_url):
 				ex_f.write(f'{item_url}\n')
 			return
 
-@retry(wait=wait_fixed(2))
+@retry(wait=wait_fixed(1))
 def main_get_URLs(mainurl):
 	prod_urls = []
 	category = re.search(r'/([^/]*)$', mainurl).group(1).title()
@@ -112,10 +111,9 @@ def main_get_URLs(mainurl):
 	writer.save()
 	return
 
-mainurl = 'https://www.ssense.com/en-ca/women/activewear'
+with open('Mainurls.txt') as file:
+	mainurls = [line.strip() for line in file.readlines()]
 
-main_get_URLs(mainurl)
-
-
-#Testing only
-# getData({'url':'https://www.ssense.com/en-ca/women/product/kimhekim/white-logo-yoga-bra/9094001', 'category':'Tops'})
+for mainurl in mainurls:
+	final_data = []
+	main_get_URLs(mainurl)
