@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from csv import DictWriter
-from tenacity import *
+from tenacity import retry
 from pathlib import Path
 import browser_cookie3
 import pandas as pd
@@ -8,11 +8,10 @@ import requests
 import json
 import re
 
-
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36'}
 
 def refreshCookies():
-	cj = browser_cookie3.firefox()
+	cj = browser_cookie3.chrome()
 	domain_url = 'ssense.com'
 	ss_cookies = {}
 	for c in cj:
@@ -21,10 +20,11 @@ def refreshCookies():
 	return ss_cookies
 
 # Get Data from each URL
-@retry(wait=wait_fixed(1))
+@retry
 def getData(prod_url):
 	item_main_cat = prod_url['category']
 	item_url = prod_url['url']
+	topcat = prod_url['maincategory']
 	resp = requests.get(url=f'{item_url}.json', headers=headers, cookies=refreshCookies())
 	if 'Access to this page has been denied' in resp.text:
 		print('Perimeter-x Block! Retrying.')
@@ -43,12 +43,12 @@ def getData(prod_url):
 			imgurls = data['images']
 			item_cat = data['category']['name'].title()
 			#Download Images
-			Path(f'{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Images').mkdir(parents=True, exist_ok=True)
-			Path(f'{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Data').mkdir(parents=True, exist_ok=True)
+			Path(f'{topcat}/{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Images').mkdir(parents=True, exist_ok=True)
+			Path(f'{topcat}/{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Data').mkdir(parents=True, exist_ok=True)
 			for idx, imgurl in enumerate(imgurls):
 				imgurl = imgurl.replace('__IMAGE_PARAMS__', 'b_white,g_center,f_auto,q_auto:best')
 				resp = requests.get(url=imgurl, stream=True)
-				with open(f'{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Images/{sku}_{idx+1}.jpg', 'wb') as f:
+				with open(f'{topcat}/{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Images/{sku}_{idx+1}.jpg', 'wb') as f:
 					f.write(resp.content)
 					f.close()
 			#Data to Dictionary
@@ -56,7 +56,7 @@ def getData(prod_url):
 				'URL': item_url,
 				'Brand': brand,
 				'Product Name': prodname,
-				'Description': desc,
+				'Description': desc.strip(),
 				'SKU': sku,
 				'Price': price,
 				'Currency': curr,
@@ -66,28 +66,37 @@ def getData(prod_url):
 			final_data.append(datum)
 			#Dictionary to Category CSV
 			csv_headers = ['URL','Brand','Product Name','Description','SKU','Price','Currency','Fabric','Main Image']
-			with open(f'{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Data/Data.csv', 'a', newline='', encoding='utf-8') as f:
+			with open(f'{topcat}/{item_main_cat}_{item_cat}/{item_main_cat}_{item_cat}_Data/Data.csv', 'a', newline='', encoding='utf-8') as f:
 				dw = DictWriter(f, fieldnames=csv_headers)
 				if f.tell() == 0:
 					dw.writeheader()
 				dw.writerow(datum)
 				f.close()
-			print('{} done!'.format(datum['URL']))
+			print(f'{item_url} done!')
 			return final_data
 		except:
 			with open('Exceptions.txt', 'a') as ex_f:
 				ex_f.write(f'{item_url}\n')
 			return
 
-@retry(wait=wait_fixed(1))
-def main_get_URLs(mainurl):
+#Testing only
+# getData({
+# 	'url': 'https://www.ssense.com/en-ca/men/product/balmain/black-leather-b-belt/10091261',
+# 	'category': 'Belts-Suspenders',
+# 	'maincategory': 'Men'
+# 	})
+
+@retry
+def getCategoryURLs(mainurl):
+	topcat = re.search(r'https://www.ssense.com/en-../([^/]+)/[^/]+', mainurl).group(1).title()
+	Path(topcat).mkdir(parents=True, exist_ok=True)
 	prod_urls = []
 	category = re.search(r'/([^/]*)$', mainurl).group(1).title()
 	pagenum = 0
 	while True:
 		pagenum+=1
-		starturl = f'{mainurl}.json?page={pagenum}'
-		resp = requests.get(url=starturl, headers=headers, cookies=refreshCookies())
+		start = f'{mainurl}.json?page={pagenum}'
+		resp = requests.get(url=start, headers=headers, cookies=refreshCookies())
 		if 'Access to this page has been denied' in resp.text:
 			print('Perimeter-x Block! Retrying.')
 			raise HTTPError("PX-Block!")
@@ -96,12 +105,13 @@ def main_get_URLs(mainurl):
 			data = resp.json()
 			for product in data['products']:
 				url = 'https://www.ssense.com/en-ca{}'.format(product['url'])
-				prod_url_datum = {'url': url, 'category': category}
+				prod_url_datum = {'url': url, 'category': category, 'maincategory': topcat}
 				prod_urls.append(prod_url_datum)
 			print(f'Done {category} page {pagenum}')
 			if data['meta']['total_pages'] == pagenum:
 				break
 	print('Getting data for {} {} products->'.format(len(prod_urls), category))
+	
 	with ThreadPoolExecutor(max_workers=None) as executor:
 		executor.map(getData, prod_urls)
 
@@ -111,9 +121,30 @@ def main_get_URLs(mainurl):
 	writer.save()
 	return
 
-with open('Mainurls.txt') as file:
-	mainurls = [line.strip() for line in file.readlines()]
+def getMainCategoryURLs(link):
+	caturls = []
+	resp = requests.get(url=f'{link}.json', headers=headers, cookies=refreshCookies())
+	if 'Access to this page has been denied' in resp.text:
+		print('Perimeter-x Block! Retrying.')
+		raise HTTPError("PX-Block!")
+	elif '"facets":{"brands"' in resp.text:
+		try:
+			data = resp.json()['facets']['categories']
+			for maincat in data:
+				urls = ['{}/{}'.format(link, elem['seoKeyword']) for elem in maincat['children']]
+				caturls.extend(urls)
+		except:
+			with open('Exceptions.txt', 'a') as ex_f:
+				ex_f.write(f'{link}\n')
+			return
+	return caturls
 
-for mainurl in mainurls:
+print('Enter the start URL at this level-> https://www.ssense.com/en-ca/men')
+starturl = input('Enter Starting URL: ')
+
+# starturl = 'https://www.ssense.com/en-ca/men'
+caturls = getMainCategoryURLs(starturl)
+
+for caturl in caturls:
 	final_data = []
-	main_get_URLs(mainurl)
+	getCategoryURLs(caturl)
